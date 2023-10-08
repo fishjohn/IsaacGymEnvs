@@ -49,13 +49,13 @@ env:
     decimation: 4
 
   defaultJointAngles:  # = target angles when action = 0.0
-      abad_L_Joint: 0.0    # [rad]
-      hip_L_Joint: 0.0     # [rad]
-      knee_L_Joint: 0.0    # [rad]
+        abad_L_Joint: 0.0    # [rad]
+        hip_L_Joint: 0.0     # [rad]
+        knee_L_Joint: 0.0    # [rad]
 
-      abad_R_Joint: 0.0    # [rad]
-      hip_R_Joint: 0.0     # [rad]
-      knee_R_Joint: 0.0    # [rad]
+        abad_R_Joint: 0.0    # [rad]
+        hip_R_Joint: 0.0     # [rad]
+        knee_R_Joint: 0.0    # [rad]
 
   urdfAsset:
     file: "urdf/biped/urdf/biped.urdf"

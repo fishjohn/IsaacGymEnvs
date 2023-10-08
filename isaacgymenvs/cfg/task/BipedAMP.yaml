@@ -1,0 +1,11 @@
+# used to create the object
+name: BipedAMP
+
+physics_engine: ${..physics_engine}
+
+env:
+  numEnvs: ${resolve_default:4096,${...num_envs}}
+  envSpacing: 5
+  episodeLength: 300
+  cameraFollow: True # if the camera follows humanoid or not
+  enableDebugVis: False
