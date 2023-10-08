@@ -13,7 +13,7 @@ from isaacgymenvs.utils.torch_jit_utils import to_torch, get_axis_params, torch_
 from isaacgymenvs.tasks.base.vec_task import VecTask
 
 
-class BipedAMP(VecTask):
+class BipedAMPBase(VecTask):
 
     def __init__(self, cfg, rl_device, sim_device, graphics_device_id, headless, virtual_screen_capture, force_render):
 
