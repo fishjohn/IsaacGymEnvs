@@ -8,6 +8,7 @@ from gym import spaces
 from isaacgym import gymtorch
 
 from isaacgymenvs.tasks.amp.biped_amp_base import BipedAMPBase
+from isaacgymenvs.tasks.amp.utils_amp.motion_loader import MotionLoader
 
 from isaacgymenvs.utils.torch_jit_utils import quat_mul, to_torch, calc_heading_quat_inv, quat_to_tan_norm, \
     my_quat_rotate
@@ -39,8 +40,7 @@ class BipedAMP(BipedAMPBase):
                          headless=headless, virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
         # load motion data
-        # TODO: add motion file name param to yaml
-        motion_file = cfg['env'].get('motion_file', "amp_biped_forward.json")
+        motion_file = cfg['env'].get('motion_file', "biped_locomotion.yaml")
         motion_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                         "../../assets/amp/biped_motions/" + motion_file)
         self._load_motion(motion_file_path)
@@ -56,6 +56,8 @@ class BipedAMP(BipedAMPBase):
         self._hist_amp_obs_buf = self._amp_obs_buf[:, 1:]
 
         self._amp_obs_demo_buf = None
+
+        self.reset_idx(torch.arange(self.num_envs, device=self.device))
 
         return
 
@@ -80,17 +82,41 @@ class BipedAMP(BipedAMPBase):
         return self.task.fetch_amp_obs_demo(num_samples)
 
     def fetch_amp_obs_demo(self, num_samples):
-        """
-        Load from motion dataset and return amp_obs_demo_flat
-        """
-        return
+        dt = self.dt
+        motion_ids = self._motion_loader.sample_motions(num_samples)
+
+        if (self._amp_obs_demo_buf is None):
+            self._build_amp_obs_demo_buf(num_samples)
+        else:
+            assert (self._amp_obs_demo_buf.shape[0] == num_samples)
+
+        motion_times0 = self._motion_loader.sample_time(motion_ids)
+        motion_ids = np.tile(np.expand_dims(motion_ids, axis=-1), [1, self._num_amp_obs_steps])
+        motion_times = np.expand_dims(motion_times0, axis=-1)
+        time_steps = -dt * np.arange(0, self._num_amp_obs_steps)
+        motion_times = motion_times + time_steps
+
+        motion_ids = motion_ids.flatten()
+        motion_times = motion_times.flatten()
+
+        root_pos, root_rot, joint_pos, ee_pos, lin_vel, ang_vel, joint_vel \
+            = self._motion_loader.get_motion_state(motion_ids, motion_times)
+        root_states = torch.cat([root_pos, root_rot, lin_vel, ang_vel], dim=-1)
+        amp_obs_demo = build_amp_observations(root_states, lin_vel, ang_vel, joint_pos, joint_vel)
+
+        self._amp_obs_demo_buf[:] = amp_obs_demo.view(self._amp_obs_demo_buf.shape)
+
+        amp_obs_demo_flat = self._amp_obs_demo_buf.view(-1, self.get_num_amp_obs())
+
+        return amp_obs_demo_flat
 
     def _build_amp_obs_demo_buf(self, num_samples):
-        self._amp_obs_demo_buf = torch.zeros((num_samples, self._num_amp_obs_steps, NUM_AMP_OBS_PER_STEP), device=self.device, dtype=torch.float)
+        self._amp_obs_demo_buf = torch.zeros((num_samples, self._num_amp_obs_steps, NUM_AMP_OBS_PER_STEP),
+                                             device=self.device, dtype=torch.float)
         return
 
     def _load_motion(self, motion_file):
-        # TODO: add motion_lib object instantiation
+        self._motion_loader = MotionLoader(motion_file=motion_file, device=self.device)
         return
 
     def reset_idx(self, env_ids):
@@ -137,9 +163,31 @@ class BipedAMP(BipedAMPBase):
         return
 
     def _reset_ref_state_init(self, env_ids):
-        """
-        load motion data and set to initial state
-        """
+        num_envs = env_ids.shape[0]
+        motion_ids = self._motion_loader.sample_motions(num_envs)
+
+        if (self._state_init == BipedAMP.StateInit.Random
+                or self._state_init == BipedAMP.StateInit.Hybrid):
+            motion_times = self._motion_loader.sample_time(motion_ids)
+        elif (self._state_init == BipedAMP.StateInit.Start):
+            motion_times = np.zeros(num_envs)
+        else:
+            assert (False), "Unsupported state initialization strategy: {:s}".format(str(self._state_init))
+
+        root_pos, root_rot, joint_pos, ee_pos, lin_vel, ang_vel, joint_vel \
+            = self._motion_loader.get_motion_state(motion_ids, motion_times)
+
+        self._set_env_state(env_ids=env_ids,
+                            root_pos=root_pos,
+                            root_rot=root_rot,
+                            dof_pos=joint_pos,
+                            root_vel=lin_vel,
+                            root_ang_vel=ang_vel,
+                            dof_vel=joint_vel)
+
+        self._reset_ref_env_ids = env_ids
+        self._reset_ref_motion_ids = motion_ids
+        self._reset_ref_motion_times = motion_times
         return
 
     def _reset_hybrid_state_init(self, env_ids):
@@ -163,14 +211,35 @@ class BipedAMP(BipedAMPBase):
         return
 
     def _init_amp_obs_ref(self, env_ids, motion_ids, motion_times):
-        """
-        get motion state from motion lib and assign to _hist_amp_obs_buf
-        """
         dt = self.dt
+        motion_ids = np.tile(np.expand_dims(motion_ids, axis=-1), [1, self._num_amp_obs_steps - 1])
+        motion_times = np.expand_dims(motion_times, axis=-1)
+        time_steps = -dt * (np.arange(0, self._num_amp_obs_steps - 1) + 1)
+        motion_times = motion_times + time_steps
 
+        motion_ids = motion_ids.flatten()
+        motion_times = motion_times.flatten()
+        root_pos, root_rot, joint_pos, ee_pos, lin_vel, ang_vel, joint_vel \
+            = self._motion_loader.get_motion_state(motion_ids, motion_times)
+        root_states = torch.cat([root_pos, root_rot, lin_vel, ang_vel], dim=-1)
+        amp_obs_demo = build_amp_observations(root_states, lin_vel, ang_vel, joint_pos, joint_vel)
+        self._hist_amp_obs_buf[env_ids] = amp_obs_demo.view(self._hist_amp_obs_buf[env_ids].shape)
         return
 
     def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel):
+        self.root_states[env_ids, 0:3] = root_pos
+        self.root_states[env_ids, 3:7] = root_rot
+        self.root_states[env_ids, 7:10] = root_vel
+        self.root_states[env_ids, 10:13] = root_ang_vel
+
+        self.dof_pos[env_ids] = dof_pos
+        self.dof_vel[env_ids] = dof_vel
+
+        env_ids_int32 = env_ids.to(dtype=torch.int32)
+        self.gym.set_actor_root_state_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.root_states),
+                                                     gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+        self.gym.set_dof_state_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.dof_state),
+                                              gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
         return
 
     def _update_hist_amp_obs(self, env_ids=None):
@@ -200,7 +269,7 @@ class BipedAMP(BipedAMPBase):
 #####################################################################
 @torch.jit.script
 def build_amp_observations(root_states, base_lin_vel, base_ang_vel, dof_pos, dof_vel):
-    # type: (Tensor, Tensor, Tensor) -> Tensor
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor) -> Tensor
     root_pos = root_states[:, 0:3]
     root_rot = root_states[:, 3:7]
     root_vel = root_states[:, 7:10]

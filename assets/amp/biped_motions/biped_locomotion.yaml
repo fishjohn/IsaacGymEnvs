@@ -1,0 +1,15 @@
+motions:
+  - file: forward.json
+    weight: 0.5
+  - file: backward.json
+    weight: 0.5
+  - file: lateral_left.json
+    weight: 0.5
+  - file: lateral_right.json
+    weight: 0.5
+  - file: left_steering.json
+    weight: 0.5
+  - file: right_steering.json
+    weight: 0.5
+  - file: combined.json
+    weight: 0.5
